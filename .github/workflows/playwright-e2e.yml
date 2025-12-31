@@ -1,0 +1,94 @@
+name: Playwright E2E
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+concurrency:
+  group: playwright-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, firefox, webkit]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Cache node modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            pdv/frontend/node_modules
+            ~/.npm
+          key: ${{ runner.os }}-node-${{ hashFiles('pdv/frontend/package-lock.json') }}-${{ github.ref_name }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-node-${{ hashFiles('pdv/frontend/package-lock.json') }}-${{ github.ref_name }}-
+            ${{ runner.os }}-node-${{ hashFiles('pdv/frontend/package-lock.json') }}-
+            ${{ runner.os }}-node-
+
+      - name: Install frontend dependencies
+        working-directory: pdv/frontend
+        run: npm ci
+
+      - name: Install Playwright test runner
+        working-directory: pdv/frontend
+        run: npm install -D @playwright/test
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ matrix.browser }}-${{ hashFiles('pdv/frontend/package-lock.json') }}-${{ github.ref_name }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-playwright-${{ matrix.browser }}-${{ hashFiles('pdv/frontend/package-lock.json') }}-${{ github.ref_name }}-
+            ${{ runner.os }}-playwright-${{ matrix.browser }}-${{ hashFiles('pdv/frontend/package-lock.json') }}-
+            ${{ runner.os }}-playwright-
+
+      - name: Install Playwright browser
+        working-directory: pdv/frontend
+        run: npx playwright install --with-deps ${{ matrix.browser }}
+
+      - name: Start Next dev server
+        working-directory: pdv/frontend
+        run: |
+          # Start dev server in background on port 3001
+          npm run dev -- -p 3001 &
+          # Wait for http server to be ready (up to 30s)
+          npx wait-on http://localhost:3001 -t 30000
+
+      - name: "Run Playwright tests (browser: ${{ matrix.browser }})"
+        working-directory: pdv/frontend
+        env:
+          CI: true
+        run: npx playwright test --project=${{ matrix.browser }} --reporter=github,html
+
+      - name: Zip Playwright report
+        working-directory: pdv/frontend
+        run: |
+          if [ -d playwright-report ]; then
+            sudo apt-get update -qq && sudo apt-get install -y zip >/dev/null
+            zip -r "playwright-report-${{ matrix.browser }}.zip" playwright-report
+          else
+            echo "No playwright-report directory found"
+          fi
+
+      - name: Upload Playwright report (zip)
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-${{ matrix.browser }}.zip
+          path: pdv/frontend/playwright-report-${{ matrix.browser }}.zip
+          retention-days: 15
